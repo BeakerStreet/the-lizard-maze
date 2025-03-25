@@ -1,6 +1,7 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 import random
 import math
+import socket
 
 app = Flask(__name__)
 
@@ -538,5 +539,99 @@ def get_path_labels():
     
     return jsonify(labels)
 
+@app.route('/info')
+def connection_info():
+    """Display information about how to connect to the server"""
+    # Get local IP address
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    
+    # Create HTML response with connection information
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Maze Server Connection Info</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                line-height: 1.6;
+            }
+            .info-box {
+                background-color: #f0f0f0;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                padding: 15px;
+                margin: 20px 0;
+            }
+            code {
+                background-color: #e0e0e0;
+                padding: 2px 5px;
+                border-radius: 3px;
+                font-family: monospace;
+            }
+            h2 {
+                border-bottom: 1px solid #ddd;
+                padding-bottom: 10px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Maze Server Connection Information</h1>
+        
+        <div class="info-box">
+            <h2>How to Connect</h2>
+            <p>This server is now accessible from other computers on your network.</p>
+            <p>Server is running at: <code>http://{0}:5002</code></p>
+            <p>Others can access this maze by visiting the above URL in their web browsers.</p>
+        </div>
+        
+        <div class="info-box">
+            <h2>URL Parameters</h2>
+            <p>Control visible paths with URL parameters:</p>
+            <ul>
+                <li><code>?path=alpha&path=beta</code> - Show specific paths by name</li>
+                <li><code>?reveal_all=true</code> - Show all paths</li>
+            </ul>
+            <p>Example: <code>http://{0}:5002/?path=alpha&path=delta</code></p>
+        </div>
+        
+        <div class="info-box">
+            <h2>Available Path Names</h2>
+            <p>The following path names are available:</p>
+            <ul>
+                <li><code>alpha</code> - Main left path</li>
+                <li><code>beta</code> - Main right path</li>
+                <li><code>delta</code> - Upper left path</li>
+                <li><code>gamma</code> - Upper right path</li>
+                <li><code>epsilon</code> - Lower left path</li>
+                <li><code>zeta</code> - Lower right path</li>
+                <li><code>eta</code> - Left middle path</li>
+                <li><code>theta</code> - Right middle path</li>
+                <li><code>omega</code> - Exit path</li>
+                <li><code>links</code> - Connecting paths</li>
+            </ul>
+        </div>
+        
+        <p><a href="/">Return to Maze</a></p>
+    </body>
+    </html>
+    """.format(local_ip)
+    
+    return html
+
+@app.route('/ip')
+def get_ip():
+    """Return the server's IP address"""
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    return jsonify({
+        "server_ip": local_ip,
+        "port": 5002
+    })
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5002) 
+    app.run(debug=True, host='0.0.0.0', port=5002) 
