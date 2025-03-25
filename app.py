@@ -1,529 +1,293 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, jsonify, request, redirect, url_for
 import random
 import math
 
 app = Flask(__name__)
 
+class Path:
+    def __init__(self, id, label, segments, color="#ecf0f1", visible=True):
+        self.id = id  # Unique identifier for the path
+        self.label = label  # Display label for the path
+        self.segments = segments  # List of segment tuples ((x1,y1), (x2,y2))
+        self.color = color  # Color of the path
+        self.visible = visible  # Whether the path is visible
+        self.cells = []  # List of cells that make up the path
+        
+    def get_label_position(self):
+        """Calculate a good position to place the label"""
+        # Try to find a position near the middle of the path
+        if len(self.segments) > 0:
+            # Get the middle segment
+            middle_segment = self.segments[len(self.segments) // 2]
+            # Get the middle point of that segment
+            (x0, y0), (x1, y1) = middle_segment
+            return (int((x0 + x1) / 2), int((y0 + y1) / 2))
+        return None
+
+# Store the maze as a global variable to persist path visibility states
+maze = None
+
 class Maze:
-    def __init__(self, size=64, num_paths=2):
+    def __init__(self, size=64):
         self.size = size
         self.grid = [[" " for _ in range(size)] for _ in range(size)]
         self.center = (size // 2, size // 2)
         self.entrance = (0, size // 2)
         self.exit = (size - 1, size // 2)
+        self.empty_size = 10  # Size of the empty space
+        self.border_offset = 3  # Offset from the actual border
+        self.min_straight = 5   # Minimum straight segment length
+        
+        # Dictionary to store all paths by ID
+        self.paths = {}
+        
+        # Dictionary to map labels to path ids
+        self.label_to_id = {}
+        
+        # Dictionary to store intersection points for later connections
+        self.intersection_points = {}
+        
+        # Generate the maze
         self.generate()
     
     def generate(self):
+        """Generate the maze with labeled paths"""
         # Create empty space in the middle
+        self.create_center()
+        
+        # Mark entrance and exit
+        self.create_entrance_exit()
+        
+        # Create and add all paths
+        self.create_all_paths()
+        
+        # Draw all paths onto the grid
+        self.reset_grid_and_draw_paths()
+    
+    def create_center(self):
+        """Create the empty center space"""
         cx, cy = self.center
-        empty_size = 10  # Size of the empty space
-        for i in range(-empty_size, empty_size+1):
-            for j in range(-empty_size, empty_size+1):
+        for i in range(-self.empty_size, self.empty_size+1):
+            for j in range(-self.empty_size, self.empty_size+1):
                 if 0 <= cx+i < self.size and 0 <= cy+j < self.size:
                     self.grid[cx+i][cy+j] = "."  # Empty space
-        
-        # Mark the entrance and exit
+    
+    def create_entrance_exit(self):
+        """Mark the entrance and exit on the grid"""
         self.grid[self.entrance[0]][self.entrance[1]] = "E"  # Entrance
         self.grid[self.exit[0]][self.exit[1]] = "X"  # Exit
-        
-        border_offset = 3  # Offset from the actual border
-        min_straight = 5   # Minimum straight segment length
-        
-        # Dictionary to store intersection points for later connections
-        intersection_points = {}
-        
-        # Create left path with 90-degree turns
-        # Start from entrance and create path segments with 90-degree turns
+    
+    def create_all_paths(self):
+        """Create all paths in the maze"""
+        cx, cy = self.center
         start_x, start_y = self.entrance[0] + 1, self.entrance[1]
         
+        # Main border paths
+        self.create_main_left_path(start_x, start_y, cx, cy)
+        self.create_main_right_path(start_x, start_y, cx, cy)
+        self.create_exit_path(cx, cy)
+        
+        # Additional paths
+        self.create_additional_paths(cx, cy)
+    
+    def create_main_left_path(self, start_x, start_y, cx, cy):
+        """Create the main left path that follows the border"""
         # Path segments for left side
         segments = [
             # Down from entrance
-            ((start_x, start_y), (start_x + min_straight, start_y)),
+            ((start_x, start_y), (start_x + self.min_straight, start_y)),
             # Down to bottom border
-            ((start_x + min_straight, start_y), (start_x + min_straight, self.size - border_offset)),
+            ((start_x + self.min_straight, start_y), (start_x + self.min_straight, self.size - self.border_offset)),
             # Left along bottom
-            ((start_x + min_straight, self.size - border_offset), (border_offset, self.size - border_offset)),
+            ((start_x + self.min_straight, self.size - self.border_offset), (self.border_offset, self.size - self.border_offset)),
             # Up along left border
-            ((border_offset, self.size - border_offset), (border_offset, cy + min_straight)),
+            ((self.border_offset, self.size - self.border_offset), (self.border_offset, cy + self.min_straight)),
             # Right toward center (horizontal approach to center)
-            ((border_offset, cy + min_straight), (cx - empty_size - 1, cy + min_straight))
-        ]
-        
-        # Store intersection points where other paths can connect
-        intersection_points['left_bottom'] = (border_offset + 15, self.size - border_offset)
-        intersection_points['left_vertical'] = (border_offset, cy - 10)
-        intersection_points['left_approach'] = (cx - empty_size - 8, cy + min_straight)
-        
-        for segment in segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Create right path with 90-degree turns
-        # Path segments for right side
-        segments = [
-            # Down from entrance
-            ((start_x, start_y), (start_x + min_straight, start_y)),
-            # Up towards top border
-            ((start_x + min_straight, start_y), (start_x + min_straight, border_offset)), 
-            # Right along top border
-            ((start_x + min_straight, border_offset), (self.size - border_offset, border_offset)),
-            # Down along right border
-            ((self.size - border_offset, border_offset), (self.size - border_offset, cy - min_straight)),
-            # Left toward center (horizontal approach to center)
-            ((self.size - border_offset, cy - min_straight), (cx + empty_size + 1, cy - min_straight))
+            ((self.border_offset, cy + self.min_straight), (cx - self.empty_size - 1, cy + self.min_straight))
         ]
         
         # Store intersection points
-        intersection_points['right_top'] = (self.size - border_offset - 15, border_offset)
-        intersection_points['right_vertical'] = (self.size - border_offset, cy + 10)
-        intersection_points['right_approach'] = (cx + empty_size + 8, cy - min_straight)
+        self.intersection_points['left_bottom'] = (self.border_offset + 15, self.size - self.border_offset)
+        self.intersection_points['left_vertical'] = (self.border_offset, cy - 10)
+        self.intersection_points['left_approach'] = (cx - self.empty_size - 8, cy + self.min_straight)
         
-        for segment in segments:
-            self.create_straight_path(segment[0], segment[1])
+        # Create the path object
+        left_path = Path(
+            id="main_left",
+            label="Alpha",
+            segments=segments
+        )
         
+        # Add to paths dictionary
+        self.paths["main_left"] = left_path
+        self.label_to_id["alpha"] = "main_left"
+    
+    def create_main_right_path(self, start_x, start_y, cx, cy):
+        """Create the main right path that follows the border"""
+        # Path segments for right side
+        segments = [
+            # Down from entrance
+            ((start_x, start_y), (start_x + self.min_straight, start_y)),
+            # Up towards top border
+            ((start_x + self.min_straight, start_y), (start_x + self.min_straight, self.border_offset)), 
+            # Right along top border
+            ((start_x + self.min_straight, self.border_offset), (self.size - self.border_offset, self.border_offset)),
+            # Down along right border
+            ((self.size - self.border_offset, self.border_offset), (self.size - self.border_offset, cy - self.min_straight)),
+            # Left toward center (horizontal approach to center)
+            ((self.size - self.border_offset, cy - self.min_straight), (cx + self.empty_size + 1, cy - self.min_straight))
+        ]
+        
+        # Store intersection points
+        self.intersection_points['right_top'] = (self.size - self.border_offset - 15, self.border_offset)
+        self.intersection_points['right_vertical'] = (self.size - self.border_offset, cy + 10)
+        self.intersection_points['right_approach'] = (cx + self.empty_size + 8, cy - self.min_straight)
+        
+        # Create the path object
+        right_path = Path(
+            id="main_right",
+            label="Beta",
+            segments=segments
+        )
+        
+        # Add to paths dictionary
+        self.paths["main_right"] = right_path
+        self.label_to_id["beta"] = "main_right"
+    
+    def create_exit_path(self, cx, cy):
+        """Create the path from center to exit"""
         # Create path from center to exit (with 90-degree approach)
-        # Create a path that exits the center horizontally then turns toward exit
-        exit_segments = [
+        segments = [
             # Right from center
-            ((cx + empty_size + 1, cy), (cx + empty_size + min_straight, cy)),
+            ((cx + self.empty_size + 1, cy), (cx + self.empty_size + self.min_straight, cy)),
             # Down to exit y-level
-            ((cx + empty_size + min_straight, cy), (cx + empty_size + min_straight, self.exit[1])),
+            ((cx + self.empty_size + self.min_straight, cy), (cx + self.empty_size + self.min_straight, self.exit[1])),
             # Right to exit
-            ((cx + empty_size + min_straight, self.exit[1]), (self.exit[0] - 1, self.exit[1]))
+            ((cx + self.empty_size + self.min_straight, self.exit[1]), (self.exit[0] - 1, self.exit[1]))
         ]
         
         # Store intersection point for exit path
-        intersection_points['exit_vertical'] = (cx + empty_size + min_straight, cy + 10)
-        intersection_points['exit_horizontal'] = (cx + empty_size + min_straight + 7, self.exit[1])
-        
-        for segment in exit_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Add 6 additional paths, ensuring connections to other paths or center
-        
-        # Path 1: Top-left to center (top approach)
-        path1_segments = [
-            # Create a vertical path from the top-left area
-            ((border_offset + 10, border_offset), (border_offset + 10, border_offset + 15)),
-            # Right toward center region
-            ((border_offset + 10, border_offset + 15), (cx - empty_size - 1, border_offset + 15))
-        ]
-        
-        # Store intersection point
-        intersection_points['path1_vertical'] = (border_offset + 10, border_offset + 10)
-        intersection_points['path1_horizontal'] = (border_offset + 25, border_offset + 15)
-        
-        # Connect to another path
-        path1_connect_segments = [
-            # Path 1 connect to right top
-            ((border_offset + 10, border_offset), (intersection_points['right_top'][0], border_offset))
-        ]
-        
-        for segment in path1_segments + path1_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Path 2: Top-right to center (top approach)
-        path2_segments = [
-            # Create a vertical path from the top-right area
-            ((self.size - border_offset - 10, border_offset), (self.size - border_offset - 10, border_offset + 25)),
-            # Left toward center region
-            ((self.size - border_offset - 10, border_offset + 25), (cx + empty_size + 1, border_offset + 25))
-        ]
-        
-        # Store intersection point
-        intersection_points['path2_vertical'] = (self.size - border_offset - 10, border_offset + 12)
-        intersection_points['path2_horizontal'] = (self.size - border_offset - 25, border_offset + 25)
-        
-        # Connect to another path - connects to exit path
-        path2_connect_segments = [
-            # Connect to exit path
-            ((self.size - border_offset - 10, border_offset + 25), (self.size - border_offset - 10, cy - min_straight))
-        ]
-        
-        for segment in path2_segments + path2_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Path 3: Bottom-left to center (bottom approach)
-        path3_segments = [
-            # Create a vertical path from the bottom-left area
-            ((border_offset + 20, self.size - border_offset), (border_offset + 20, self.size - border_offset - 15)),
-            # Right toward center region
-            ((border_offset + 20, self.size - border_offset - 15), (cx - empty_size - 1, self.size - border_offset - 15))
-        ]
-        
-        # Store intersection point
-        intersection_points['path3_vertical'] = (border_offset + 20, self.size - border_offset - 8)
-        intersection_points['path3_horizontal'] = (cx - empty_size - 10, self.size - border_offset - 15)
-        
-        # Connect to another path - connects to left bottom
-        path3_connect_segments = [
-            # Connect to left bottom path
-            ((border_offset + 20, self.size - border_offset), (intersection_points['left_bottom'][0], self.size - border_offset))
-        ]
-        
-        for segment in path3_segments + path3_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Path 4: Bottom-right to center (bottom approach)
-        path4_segments = [
-            # Create a vertical path from the bottom-right area
-            ((self.size - border_offset - 15, self.size - border_offset), (self.size - border_offset - 15, self.size - border_offset - 25)),
-            # Left toward center region
-            ((self.size - border_offset - 15, self.size - border_offset - 25), (cx + empty_size + 1, self.size - border_offset - 25))
-        ]
-        
-        # Add intersection point
-        intersection_points['bottom_right'] = (self.size - border_offset - 15, self.size - border_offset - 12)
-        intersection_points['path4_horizontal'] = (cx + empty_size + 15, self.size - border_offset - 25)
-        
-        # Connect to another path - connects to right vertical
-        path4_connect_segments = [
-            # Connect to right vertical path
-            ((self.size - border_offset - 15, self.size - border_offset), (self.size - border_offset, self.size - border_offset))
-        ]
-        
-        for segment in path4_segments + path4_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Path 5: Left side to center (with a few turns)
-        path5_segments = [
-            # Start from left edge, mid-top
-            ((border_offset, cy - 15), (border_offset + 12, cy - 15)),
-            # Down
-            ((border_offset + 12, cy - 15), (border_offset + 12, cy - 5)),
-            # Right to center
-            ((border_offset + 12, cy - 5), (cx - empty_size - 1, cy - 5))
-        ]
-        
-        # Store intersection point
-        intersection_points['path5_turn'] = (border_offset + 12, cy - 10)
-        
-        # Connect to another path - directly connects to left vertical
-        path5_connect_segments = [
-            # Already connects to left vertical at the start point
-        ]
-        
-        for segment in path5_segments + path5_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Path 6: Right side to center (with a few turns)
-        path6_segments = [
-            # Start from right edge, mid-bottom
-            ((self.size - border_offset, cy + 15), (self.size - border_offset - 12, cy + 15)),
-            # Up
-            ((self.size - border_offset - 12, cy + 15), (self.size - border_offset - 12, cy + 5)),
-            # Left to center
-            ((self.size - border_offset - 12, cy + 5), (cx + empty_size + 1, cy + 5))
-        ]
-        
-        # Store intersection point
-        intersection_points['path6_turn'] = (self.size - border_offset - 12, cy + 10)
-        
-        # Connect to exit path
-        path6_connect_segments = [
-            # Connect to exit path
-            ((self.size - border_offset - 12, cy + 15), (intersection_points['exit_vertical'][0], cy + 15))
-        ]
-        
-        for segment in path6_segments + path6_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Additional connections between paths to ensure full connectivity
-        additional_connections = [
-            # Connect path 1 and path 5
-            ((border_offset + 10, border_offset + 15), (border_offset + 12, cy - 15)),
-            # Connect path 3 and path 4 via bottom
-            ((border_offset + 20, self.size - border_offset - 10), (self.size - border_offset - 15, self.size - border_offset - 10)),
-            # Connect path 2 and path 6
-            ((self.size - border_offset - 10, border_offset + 15), (self.size - border_offset - 12, cy + 5))
-        ]
-        
-        for segment in additional_connections:
-            # Create intermediate points to ensure 90-degree turns
-            self.create_l_shaped_path(segment[0], segment[1])
-        
-        # Add 15 more paths
-        
-        # Path 7: Top side of center, left half
-        path7_segments = [
-            # Direct horizontal approach to center
-            ((cx - 20, border_offset), (cx - 20, border_offset + 15)),
-            ((cx - 20, border_offset + 15), (cx - empty_size - 1, border_offset + 15))
-        ]
-        
-        # Store intersection point
-        intersection_points['path7_vertical'] = (cx - 20, border_offset + 10)
-        
-        # Connect path 7 to other paths
-        path7_connect_segments = [
-            # Connect horizontally to existing path
-            ((cx - 20, border_offset), (border_offset + 20, border_offset))
-        ]
-        
-        for segment in path7_segments + path7_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 8: Top side of center, right half
-        path8_segments = [
-            # Direct horizontal approach to center
-            ((cx + 20, border_offset), (cx + 20, border_offset + 15)),
-            ((cx + 20, border_offset + 15), (cx + empty_size + 1, border_offset + 15))
-        ]
-        
-        # Store intersection point
-        intersection_points['path8_vertical'] = (cx + 20, border_offset + 10)
-        
-        # Connect path 8 to other paths
-        path8_connect_segments = [
-            # Connect horizontally to existing path
-            ((cx + 20, border_offset), (self.size - border_offset - 20, border_offset))
-        ]
-        
-        for segment in path8_segments + path8_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 9: Bottom side of center, left half
-        path9_segments = [
-            # Direct horizontal approach to center
-            ((cx - 15, self.size - border_offset), (cx - 15, self.size - border_offset - 15)),
-            ((cx - 15, self.size - border_offset - 15), (cx - empty_size - 1, self.size - border_offset - 15))
-        ]
-        
-        # Store intersection point
-        intersection_points['path9_vertical'] = (cx - 15, self.size - border_offset - 10)
-        
-        # Connect path 9 to other paths
-        path9_connect_segments = [
-            # Connect horizontally to existing path
-            ((cx - 15, self.size - border_offset), (border_offset + 20, self.size - border_offset))
-        ]
-        
-        for segment in path9_segments + path9_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 10: Bottom side of center, right half
-        path10_segments = [
-            # Direct horizontal approach to center
-            ((cx + 15, self.size - border_offset), (cx + 15, self.size - border_offset - 15)),
-            ((cx + 15, self.size - border_offset - 15), (cx + empty_size + 1, self.size - border_offset - 15))
-        ]
-        
-        # Store intersection point
-        intersection_points['path10_vertical'] = (cx + 15, self.size - border_offset - 10)
-        
-        # Connect path 10 to other paths
-        path10_connect_segments = [
-            # Connect horizontally to existing path
-            ((cx + 15, self.size - border_offset), (self.size - border_offset - 15, self.size - border_offset))
-        ]
-        
-        for segment in path10_segments + path10_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 11: Left side of center, top half
-        path11_segments = [
-            # Direct vertical approach to center
-            ((border_offset, cy - 20), (border_offset + 15, cy - 20)),
-            ((border_offset + 15, cy - 20), (cx - empty_size - 1, cy - 20))
-        ]
-        
-        # Store intersection point
-        intersection_points['path11_horizontal'] = (border_offset + 10, cy - 20)
-        
-        # Connect path 11 to other paths
-        path11_connect_segments = [
-            # Connects to left vertical path already
-        ]
-        
-        for segment in path11_segments + path11_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 12: Left side of center, bottom half
-        path12_segments = [
-            # Direct vertical approach to center
-            ((border_offset, cy + 20), (border_offset + 15, cy + 20)),
-            ((border_offset + 15, cy + 20), (cx - empty_size - 1, cy + 20))
-        ]
-        
-        # Store intersection point
-        intersection_points['path12_horizontal'] = (border_offset + 10, cy + 20)
-        
-        # Connect path 12 to other paths - connects to left border
-        
-        for segment in path12_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 13: Right side of center, top half
-        path13_segments = [
-            # Direct vertical approach to center
-            ((self.size - border_offset, cy - 20), (self.size - border_offset - 15, cy - 20)),
-            ((self.size - border_offset - 15, cy - 20), (cx + empty_size + 1, cy - 20))
-        ]
-        
-        # Store intersection point
-        intersection_points['path13_horizontal'] = (self.size - border_offset - 10, cy - 20)
-        
-        # Connect path 13 to other paths - connects to right border
-        
-        for segment in path13_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 14: Right side of center, bottom half
-        path14_segments = [
-            # Direct vertical approach to center
-            ((self.size - border_offset, cy + 20), (self.size - border_offset - 15, cy + 20)),
-            ((self.size - border_offset - 15, cy + 20), (cx + empty_size + 1, cy + 20))
-        ]
-        
-        # Store intersection point
-        intersection_points['path14_horizontal'] = (self.size - border_offset - 10, cy + 20)
-        
-        # Connect path 14 to other paths - connects to right border
-        
-        for segment in path14_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 15: Diagonal-inspired approach top-left
-        path15_segments = [
-            # Start from top-left area with 90-degree turns
-            ((border_offset + 25, border_offset + 5), (border_offset + 25, border_offset + 30)),
-            ((border_offset + 25, border_offset + 30), (border_offset + 40, border_offset + 30)),
-            ((border_offset + 40, border_offset + 30), (border_offset + 40, cy - empty_size - 5)),
-            ((border_offset + 40, cy - empty_size - 5), (cx - empty_size - 1, cy - empty_size - 5))
-        ]
-        
-        # Connect path 15 to other paths
-        path15_connect_segments = [
-            # Connect to path 1
-            ((border_offset + 25, border_offset + 5), (border_offset + 10, border_offset + 5))
-        ]
-        
-        for segment in path15_segments + path15_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 16: Diagonal-inspired approach top-right
-        path16_segments = [
-            # Start from top-right area with 90-degree turns
-            ((self.size - border_offset - 25, border_offset + 5), (self.size - border_offset - 25, border_offset + 30)),
-            ((self.size - border_offset - 25, border_offset + 30), (self.size - border_offset - 40, border_offset + 30)),
-            ((self.size - border_offset - 40, border_offset + 30), (self.size - border_offset - 40, cy - empty_size - 5)),
-            ((self.size - border_offset - 40, cy - empty_size - 5), (cx + empty_size + 1, cy - empty_size - 5))
-        ]
-        
-        # Connect path 16 to other paths
-        path16_connect_segments = [
-            # Connect to path 2
-            ((self.size - border_offset - 25, border_offset + 5), (self.size - border_offset - 10, border_offset + 5))
-        ]
-        
-        for segment in path16_segments + path16_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 17: Diagonal-inspired approach bottom-left
-        path17_segments = [
-            # Start from bottom-left area with 90-degree turns
-            ((border_offset + 30, self.size - border_offset - 5), (border_offset + 30, self.size - border_offset - 30)),
-            ((border_offset + 30, self.size - border_offset - 30), (border_offset + 45, self.size - border_offset - 30)),
-            ((border_offset + 45, self.size - border_offset - 30), (border_offset + 45, cy + empty_size + 5)),
-            ((border_offset + 45, cy + empty_size + 5), (cx - empty_size - 1, cy + empty_size + 5))
-        ]
-        
-        # Connect path 17 to other paths
-        path17_connect_segments = [
-            # Connect to path 3
-            ((border_offset + 30, self.size - border_offset - 5), (border_offset + 20, self.size - border_offset - 5))
-        ]
-        
-        for segment in path17_segments + path17_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 18: Diagonal-inspired approach bottom-right
-        path18_segments = [
-            # Start from bottom-right area with 90-degree turns
-            ((self.size - border_offset - 30, self.size - border_offset - 5), (self.size - border_offset - 30, self.size - border_offset - 30)),
-            ((self.size - border_offset - 30, self.size - border_offset - 30), (self.size - border_offset - 45, self.size - border_offset - 30)),
-            ((self.size - border_offset - 45, self.size - border_offset - 30), (self.size - border_offset - 45, cy + empty_size + 5)),
-            ((self.size - border_offset - 45, cy + empty_size + 5), (cx + empty_size + 1, cy + empty_size + 5))
-        ]
-        
-        # Connect path 18 to other paths
-        path18_connect_segments = [
-            # Connect to path 4
-            ((self.size - border_offset - 30, self.size - border_offset - 5), (self.size - border_offset - 15, self.size - border_offset - 5))
-        ]
-        
-        for segment in path18_segments + path18_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 19: Intermediate path connecting quadrants
-        path19_segments = [
-            # Horizontal path through middle
-            ((border_offset + 20, cy - 30), (self.size - border_offset - 20, cy - 30))
-        ]
-        
-        # Connect path 19 to other paths
-        path19_connect_segments = [
-            # Connect to left and right sides vertically
-            ((border_offset + 20, cy - 30), (border_offset + 20, border_offset + 20)),
-            ((self.size - border_offset - 20, cy - 30), (self.size - border_offset - 20, border_offset + 20))
-        ]
-        
-        for segment in path19_segments + path19_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 20: Intermediate path connecting quadrants
-        path20_segments = [
-            # Horizontal path through middle
-            ((border_offset + 20, cy + 30), (self.size - border_offset - 20, cy + 30))
-        ]
-        
-        # Connect path 20 to other paths
-        path20_connect_segments = [
-            # Connect to left and right sides vertically
-            ((border_offset + 20, cy + 30), (border_offset + 20, self.size - border_offset - 20)),
-            ((self.size - border_offset - 20, cy + 30), (self.size - border_offset - 20, self.size - border_offset - 20))
-        ]
-        
-        for segment in path20_segments + path20_connect_segments:
-            self.create_straight_path(segment[0], segment[1])
-        
-        # Path 21: Grid path horizontal left top
-        path21_segments = [
-            # Horizontal grid path
-            ((border_offset + 15, cy - 40), (cx - empty_size - 10, cy - 40))
-        ]
-        
-        for segment in path21_segments:
-            self.create_straight_path(segment[0], segment[1])
-            
-        # Connect to other paths with vertical segments
-        self.create_straight_path((border_offset + 15, cy - 40), (border_offset + 15, border_offset + 15))
-        self.create_straight_path((cx - empty_size - 10, cy - 40), (cx - empty_size - 10, cy - 20))
-        
-        # Add additional connections for remaining paths
-        # These are just a sample - you can add more connections as needed
-        additional_new_connections = [
-            # Connect various paths in the grid for better connectivity
-            ((border_offset + 30, border_offset + 30), (border_offset + 30, cy - 30)),
-            ((self.size - border_offset - 30, border_offset + 30), (self.size - border_offset - 30, cy - 30)),
-            ((border_offset + 30, self.size - border_offset - 30), (border_offset + 30, cy + 30)),
-            ((self.size - border_offset - 30, self.size - border_offset - 30), (self.size - border_offset - 30, cy + 30)),
-            
-            # Create some additional cross-connections
-            ((cx - 20, border_offset + 20), (cx - 20, cy - 30)),
-            ((cx + 20, border_offset + 20), (cx + 20, cy - 30)),
-            ((cx - 20, self.size - border_offset - 20), (cx - 20, cy + 30)),
-            ((cx + 20, self.size - border_offset - 20), (cx + 20, cy + 30)),
-            
-            # Connect some of the center approach paths
-            ((cx - empty_size - 15, cy - 10), (cx - empty_size - 15, cy + 10)),
-            ((cx + empty_size + 15, cy - 10), (cx + empty_size + 15, cy + 10))
-        ]
-        
-        for segment in additional_new_connections:
-            self.create_straight_path(segment[0], segment[1])
+        self.intersection_points['exit_vertical'] = (cx + self.empty_size + self.min_straight, cy + 10)
+        self.intersection_points['exit_horizontal'] = (cx + self.empty_size + self.min_straight + 7, self.exit[1])
+        
+        # Create the path object
+        exit_path = Path(
+            id="exit_path",
+            label="Omega",
+            segments=segments
+        )
+        
+        # Add to paths dictionary
+        self.paths["exit_path"] = exit_path
+        self.label_to_id["omega"] = "exit_path"
     
-    def create_l_shaped_path(self, start, end):
+    def create_additional_paths(self, cx, cy):
+        """Create all additional paths"""
+        # Create additional paths with labels
+        self.create_path_with_segments(
+            "path1", "Delta",
+            [
+                ((self.border_offset + 10, self.border_offset), (self.border_offset + 10, self.border_offset + 15)),
+                ((self.border_offset + 10, self.border_offset + 15), (cx - self.empty_size - 1, self.border_offset + 15))
+            ],
+            [
+                ((self.border_offset + 10, self.border_offset), (self.intersection_points['right_top'][0], self.border_offset))
+            ]
+        )
+        
+        self.create_path_with_segments(
+            "path2", "Gamma",
+            [
+                ((self.size - self.border_offset - 10, self.border_offset), (self.size - self.border_offset - 10, self.border_offset + 25)),
+                ((self.size - self.border_offset - 10, self.border_offset + 25), (cx + self.empty_size + 1, self.border_offset + 25))
+            ],
+            [
+                ((self.size - self.border_offset - 10, self.border_offset + 25), (self.size - self.border_offset - 10, cy - self.min_straight))
+            ]
+        )
+        
+        self.create_path_with_segments(
+            "path3", "Epsilon",
+            [
+                ((self.border_offset + 20, self.size - self.border_offset), (self.border_offset + 20, self.size - self.border_offset - 15)),
+                ((self.border_offset + 20, self.size - self.border_offset - 15), (cx - self.empty_size - 1, self.size - self.border_offset - 15))
+            ],
+            [
+                ((self.border_offset + 20, self.size - self.border_offset), (self.intersection_points['left_bottom'][0], self.size - self.border_offset))
+            ]
+        )
+        
+        self.create_path_with_segments(
+            "path4", "Zeta",
+            [
+                ((self.size - self.border_offset - 15, self.size - self.border_offset), (self.size - self.border_offset - 15, self.size - self.border_offset - 25)),
+                ((self.size - self.border_offset - 15, self.size - self.border_offset - 25), (cx + self.empty_size + 1, self.size - self.border_offset - 25))
+            ],
+            [
+                ((self.size - self.border_offset - 15, self.size - self.border_offset), (self.size - self.border_offset, self.size - self.border_offset))
+            ]
+        )
+        
+        self.create_path_with_segments(
+            "path5", "Eta",
+            [
+                ((self.border_offset, cy - 15), (self.border_offset + 12, cy - 15)),
+                ((self.border_offset + 12, cy - 15), (self.border_offset + 12, cy - 5)),
+                ((self.border_offset + 12, cy - 5), (cx - self.empty_size - 1, cy - 5))
+            ],
+            []
+        )
+        
+        self.create_path_with_segments(
+            "path6", "Theta",
+            [
+                ((self.size - self.border_offset, cy + 15), (self.size - self.border_offset - 12, cy + 15)),
+                ((self.size - self.border_offset - 12, cy + 15), (self.size - self.border_offset - 12, cy + 5)),
+                ((self.size - self.border_offset - 12, cy + 5), (cx + self.empty_size + 1, cy + 5))
+            ],
+            [
+                ((self.size - self.border_offset - 12, cy + 15), (self.intersection_points['exit_vertical'][0], cy + 15))
+            ]
+        )
+        
+        # Add connections between paths
+        connection_segments = [
+            # Connect path 1 and path 5
+            ((self.border_offset + 10, self.border_offset + 15), (self.border_offset + 12, cy - 15)),
+            # Connect path 3 and path 4 via bottom
+            ((self.border_offset + 20, self.size - self.border_offset - 10), (self.size - self.border_offset - 15, self.size - self.border_offset - 10)),
+            # Connect path 2 and path 6
+            ((self.size - self.border_offset - 10, self.border_offset + 15), (self.size - self.border_offset - 12, cy + 5))
+        ]
+        
+        # Create connections path
+        connections_path = Path(
+            id="connections",
+            label="Links",
+            segments=[]
+        )
+        
+        # Add l-shaped segments
+        for start, end in connection_segments:
+            l_segments = self.get_l_shaped_segments(start, end)
+            connections_path.segments.extend(l_segments)
+        
+        # Add to paths dictionary
+        self.paths["connections"] = connections_path
+        self.label_to_id["links"] = "connections"
+    
+    def create_path_with_segments(self, path_id, label, main_segments, connection_segments=[]):
+        """Helper to create a path with given segments"""
+        segments = main_segments + connection_segments
+        path = Path(
+            id=path_id,
+            label=label,
+            segments=segments
+        )
+        self.paths[path_id] = path
+        self.label_to_id[label.lower()] = path_id  # Store lowercase label to path ID mapping
+    
+    def get_l_shaped_segments(self, start, end):
         """Create an L-shaped path with a 90-degree turn between start and end"""
         x0, y0 = start
         x1, y1 = end
@@ -531,14 +295,63 @@ class Maze:
         # Create the intermediate point for the 90-degree turn
         # Choose to go horizontal first then vertical
         if random.random() < 0.5:
-            self.create_straight_path((x0, y0), (x1, y0))  # Horizontal segment
-            self.create_straight_path((x1, y0), (x1, y1))  # Vertical segment
+            return [
+                ((x0, y0), (x1, y0)),  # Horizontal segment
+                ((x1, y0), (x1, y1))   # Vertical segment
+            ]
         else:
-            self.create_straight_path((x0, y0), (x0, y1))  # Vertical segment
-            self.create_straight_path((x0, y1), (x1, y1))  # Horizontal segment
+            return [
+                ((x0, y0), (x0, y1)),  # Vertical segment
+                ((x0, y1), (x1, y1))   # Horizontal segment
+            ]
     
-    def create_straight_path(self, start, end):
-        """Create a straight path between two points (either horizontal or vertical)"""
+    def toggle_path(self, path_id_or_label):
+        """Toggle the visibility of a path by its ID or label"""
+        path_id = path_id_or_label
+        
+        # Check if the input is a label
+        if path_id_or_label.lower() in self.label_to_id:
+            path_id = self.label_to_id[path_id_or_label.lower()]
+        
+        if path_id in self.paths:
+            self.paths[path_id].visible = not self.paths[path_id].visible
+            self.reset_grid_and_draw_paths()
+            return True, path_id
+        return False, path_id_or_label
+    
+    def reset_grid_and_draw_paths(self):
+        """Reset the grid and redraw all paths"""
+        # Reset the grid (keep entrance, exit, and center)
+        for i in range(self.size):
+            for j in range(self.size):
+                if (i, j) == self.entrance:
+                    self.grid[i][j] = "E"
+                elif (i, j) == self.exit:
+                    self.grid[i][j] = "X"
+                elif self.is_center(i, j):
+                    self.grid[i][j] = "."
+                else:
+                    self.grid[i][j] = " "
+        
+        # Draw all visible paths
+        self.draw_paths()
+    
+    def is_center(self, i, j):
+        """Check if a cell is in the center area"""
+        cx, cy = self.center
+        return abs(i - cx) <= self.empty_size and abs(j - cy) <= self.empty_size
+    
+    def draw_paths(self):
+        """Draw all path segments onto the grid"""
+        # Draw each path's segments to the grid
+        for path_id, path in self.paths.items():
+            if path.visible:
+                for segment in path.segments:
+                    self.draw_segment(segment, path)
+    
+    def draw_segment(self, segment, path):
+        """Draw a single segment on the grid with path information"""
+        start, end = segment
         x0, y0 = start
         x1, y1 = end
         
@@ -548,6 +361,9 @@ class Maze:
         x1 = max(0, min(x1, self.size - 1))
         y1 = max(0, min(y1, self.size - 1))
         
+        # Store all cells for this segment
+        segment_cells = []
+        
         # Horizontal line
         if y0 == y1:
             start_x, end_x = min(x0, x1), max(x0, x1)
@@ -555,6 +371,7 @@ class Maze:
                 if 0 <= x < self.size and 0 <= y0 < self.size:
                     if self.grid[x][y0] == " ":
                         self.grid[x][y0] = "."
+                    segment_cells.append((x, y0))
         # Vertical line
         elif x0 == x1:
             start_y, end_y = min(y0, y1), max(y0, y1)
@@ -562,13 +379,22 @@ class Maze:
                 if 0 <= x0 < self.size and 0 <= y < self.size:
                     if self.grid[x0][y] == " ":
                         self.grid[x0][y] = "."
+                    segment_cells.append((x0, y))
+        
+        # Add these cells to the path
+        path.cells.extend(segment_cells)
     
     def to_html(self):
+        """Generate HTML for the maze with path labels"""
         html = '<div class="maze">'
+        
+        # First create the maze cells
         for i, row in enumerate(self.grid):
             html += '<div class="row">'
             for j, cell in enumerate(row):
                 cell_class = "wall"
+                data_attrs = f'data-x="{i}" data-y="{j}"'
+                
                 if cell == ".":
                     cell_class = "path"
                 elif cell == "E":
@@ -576,15 +402,141 @@ class Maze:
                 elif cell == "X":
                     cell_class = "exit"
                 
-                html += f'<div class="{cell_class}"></div>'
+                html += f'<div class="{cell_class}" {data_attrs}></div>'
             html += '</div>'
         html += '</div>'
+        
+        # Add labels container
+        html += '<div class="path-labels">'
+        
+        # Now add labels for each path at their calculated positions
+        for path_id, path in self.paths.items():
+            if path.label and path.visible:  # Only show labels for visible paths
+                label_pos = path.get_label_position()
+                if label_pos:
+                    x, y = label_pos
+                    # Convert grid coordinates to pixel coordinates (10px per cell)
+                    px = y * 10
+                    py = x * 10
+                    html += f'<div class="path-label" style="left: {px}px; top: {py}px;" data-path-id="{path_id}">{path.label}</div>'
+        
+        html += '</div>'
+        
         return html
+
+    def get_path_info(self):
+        """Get information about all paths in the maze"""
+        paths_info = {}
+        for path_id, path in self.paths.items():
+            label_pos = path.get_label_position()
+            if label_pos:
+                x, y = label_pos
+                paths_info[path_id] = {
+                    'id': path_id,
+                    'label': path.label,
+                    'visible': path.visible,
+                    'color': path.color,
+                    'labelPosition': {'x': y, 'y': x}  # Swap x and y for pixel coordinates
+                }
+        return paths_info
 
 @app.route('/')
 def index():
-    maze = Maze()
-    return render_template('index.html', maze_html=maze.to_html())
+    global maze
+    if maze is None:
+        maze = Maze()
+    
+    # Check if reveal_all parameter is present
+    reveal_all = request.args.get('reveal_all', '').lower() in ['true', '1', 'yes', 'y']
+    
+    if reveal_all:
+        # Make all paths visible
+        for path_id in maze.paths:
+            maze.paths[path_id].visible = True
+    else:
+        # Make all paths hidden by default
+        for path_id in maze.paths:
+            maze.paths[path_id].visible = False
+        
+        # Check for path parameters in the URL
+        visible_paths = request.args.getlist('path')
+        if visible_paths:
+            for path_name in visible_paths:
+                # Convert to lowercase for case-insensitive matching
+                path_name_lower = path_name.lower()
+                
+                # First check if it's a direct path ID
+                if path_name in maze.paths:
+                    maze.paths[path_name].visible = True
+                # Then check if it's a path label
+                elif path_name_lower in maze.label_to_id:
+                    path_id = maze.label_to_id[path_name_lower]
+                    maze.paths[path_id].visible = True
+    
+    # Redraw the maze with updated visibility
+    maze.reset_grid_and_draw_paths()
+    
+    return render_template('index.html', maze_html=maze.to_html(), paths_info=maze.get_path_info())
+
+@app.route('/toggle/<path_id_or_label>')
+def toggle_path(path_id_or_label):
+    global maze
+    if maze is None:
+        maze = Maze()
+    
+    success, path_id = maze.toggle_path(path_id_or_label)
+    
+    # Return path info after toggling
+    path_info = None
+    if success and path_id in maze.paths:
+        path = maze.paths[path_id]
+        path_info = {
+            "id": path_id,
+            "label": path.label,
+            "visible": path.visible
+        }
+    
+    return jsonify({
+        "success": success,
+        "path_id": path_id,
+        "path_info": path_info
+    })
+
+@app.route('/paths')
+def get_paths():
+    global maze
+    if maze is None:
+        maze = Maze()
+    
+    return jsonify(maze.get_path_info())
+
+@app.route('/toggle-all', methods=['POST'])
+def toggle_all_paths():
+    global maze
+    if maze is None:
+        maze = Maze()
+    
+    visible = request.json.get('visible', False)
+    
+    # Toggle all paths to the specified visibility
+    for path_id in maze.paths:
+        maze.paths[path_id].visible = visible
+    
+    maze.reset_grid_and_draw_paths()
+    return jsonify({"success": True, "visible": visible})
+
+@app.route('/labels')
+def get_path_labels():
+    global maze
+    if maze is None:
+        maze = Maze()
+    
+    # Create a dictionary mapping labels to path IDs
+    labels = {}
+    for path_id, path in maze.paths.items():
+        labels[path.label.lower()] = path_id
+    
+    return jsonify(labels)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001) 
+    app.run(debug=True, port=5002) 
